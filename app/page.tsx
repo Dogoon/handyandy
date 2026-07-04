@@ -1,6 +1,7 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import styles from './page.module.css';
+import { pingAgent } from './lib/agent';
 
 type WorkMode = 'shot' | 'video' | 'asset' | 'design';
 type Screen = 'create' | 'search' | 'assets' | 'shots' | 'settings';
@@ -66,6 +67,14 @@ export default function Home() {
   const [newApiKey, setNewApiKey] = useState('');
   const [extraTools, setExtraTools] = useState<string[]>([]);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({ ChatGPT: '', Claude: '', Kling: '' });
+  const [agentConnected, setAgentConnected] = useState(false);
+
+  useEffect(() => {
+    const check = async () => setAgentConnected(await pingAgent());
+    check();
+    const interval = setInterval(check, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   const proj = PROJECTS[projIdx];
 
@@ -225,9 +234,9 @@ export default function Home() {
         </nav>
 
         <div className={styles.sbBottom}>
-          <div className={styles.connStatus}>
-            <span className={styles.connDot} />
-            <span>연결중...</span>
+          <div className={styles.connStatus} style={{ color: agentConnected ? 'var(--color-text-success)' : 'var(--color-text-danger)' }}>
+            <span className={styles.connDot} style={{ background: agentConnected ? 'var(--color-text-success)' : 'var(--color-text-danger)' }} />
+            <span>{agentConnected ? '연결됨' : '연결 끊김'}</span>
           </div>
           <button className={styles.updateBtn}>
             <i className="ti ti-refresh" style={{ fontSize: 11 }} />업데이트 확인
