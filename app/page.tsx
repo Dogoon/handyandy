@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import styles from './page.module.css';
-import { pingAgent, savePrompt, openFolder } from './lib/agent';
+import { pingAgent, savePrompt, openFolder, searchPrompts } from './lib/agent';
 
 type WorkMode = 'shot' | 'video' | 'asset' | 'design';
 type Screen = 'create' | 'search' | 'assets' | 'shots' | 'settings';
@@ -60,6 +60,9 @@ export default function Home() {
   const [prevKo, setPrevKo] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searched, setSearched] = useState(false);
+  const [searchResults, setSearchResults] = useState<{file: string; data: Record<string, unknown>}[]>([]);
+  const [searchScope, setSearchScope] = useState('current');
+  const [searching, setSearching] = useState(false);
   const [addToolOpen, setAddToolOpen] = useState(false);
   const [toolStep, setToolStep] = useState<'pick' | 'key'>('pick');
   const [pendToolName, setPendToolName] = useState('');
@@ -118,6 +121,19 @@ export default function Home() {
   };
 
   const setZone = (key: string, val: string) => setZones(z => ({ ...z, [key]: val }));
+
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    if (!rootPath) { setSaveMsg('설정에서 저장 경로를 먼저 지정해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    setSearching(true);
+    setSearched(true);
+    const root = searchScope === 'all'
+      ? rootPath
+      : `${rootPath}/${searchScope === 'current' ? proj.code : searchScope}`;
+    const result = await searchPrompts(root, searchQuery);
+    setSearchResults(result.ok && result.results ? result.results as {file: string; data: Record<string, unknown>}[] : []);
+    setSearching(false);
+  };
 
   const handleSave = async () => {
     if (!rootPath) { setSaveMsg('설정에서 저장 경로를 먼저 지정해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
@@ -403,57 +419,66 @@ export default function Home() {
               <div className={styles.sbar}>
                 <i className="ti ti-search" style={{ fontSize: 13, color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
                 <input type="text" placeholder="프롬프트, 파일명 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && setSearched(true)}
+                  onKeyDown={e => e.key === 'Enter' && handleSearch()}
                   style={{ border: 'none', background: 'transparent', fontSize: 12, color: 'var(--color-text-primary)', width: '100%', outline: 'none' }} />
               </div>
-              <button className={styles.btn} onClick={() => setSearched(true)}>검색</button>
-              <button className={styles.btn} style={{ padding: '5px 7px' }} onClick={() => { setSearchQuery(''); setSearched(false); }}>
+              <button className={styles.btn} onClick={handleSearch}>검색</button>
+              <button className={styles.btn} style={{ padding: '5px 7px' }} onClick={() => { setSearchQuery(''); setSearched(false); setSearchResults([]); }}>
                 <i className="ti ti-x" />
               </button>
             </div>
-            {searched && (
-              <div className={styles.filters}>
-                {['전체', '컷 이미지', '컷 영상', '캐릭터 시트', 'EP001', 'SC003'].map((f, i) => (
-                  <button key={f} className={`${styles.fbtn} ${i === 0 ? styles.fbtnOn : ''}`}>{f}</button>
-                ))}
-              </div>
-            )}
             {!searched ? (
               <div className={styles.searchEmpty}>
                 <i className="ti ti-search" style={{ fontSize: 28, color: 'var(--color-text-tertiary)' }} />
                 <p>검색어를 입력하세요</p>
                 <small>프롬프트 내용, 파일명, 어셋명으로 검색 가능</small>
               </div>
+            ) : searching ? (
+              <div className={styles.searchEmpty}>
+                <p style={{ color: 'var(--color-text-tertiary)' }}>검색 중...</p>
+              </div>
+            ) : searchResults.length === 0 ? (
+              <div className={styles.searchEmpty}>
+                <i className="ti ti-mood-empty" style={{ fontSize: 28, color: 'var(--color-text-tertiary)' }} />
+                <p>검색 결과가 없습니다</p>
+                <small>{searchQuery}</small>
+              </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                {[
-                  { id: 'AN2601_SHOT_EP001_SC003_CUT005_V001', badge: '컷 이미지', badgeClass: styles.bShot, tool: 'ChatGPT', prompt: 'A young male hero standing at the edge of a dark forest at dusk, holding a sword.', date: '2026.07.01', icon: 'ti-photo' },
-                  { id: 'AN2601_BG_Forest_day_V001', badge: '배경 시트', badgeClass: styles.bBg, tool: 'Claude', prompt: 'A dense ancient forest environment, tall oak trees, soft dappled sunlight, mist near the ground.', date: '2026.06.28', icon: 'ti-mountain' },
-                ].map(r => (
-                  <div key={r.id} className={styles.rcard}>
-                    <div className={styles.rtop}>
-                      <div className={styles.rid}>{r.id}</div>
-                      <div className={styles.rmeta}>
-                        <span className={`${styles.badge} ${r.badgeClass}`}>{r.badge}</span>
-                        <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{r.tool}</span>
+                <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{searchResults.length}개 결과</div>
+                {searchResults.map((r, i) => {
+                  const d = r.data;
+                  const filename = String(d.filename || '');
+                  const tool = String(d.tool || '');
+                  const promptEn = String(d.prompt_en || '');
+                  const date = String(d.created_at || '');
+                  const version = String(d.version || '001');
+                  const type = String(d.type || '');
+                  return (
+                    <div key={i} className={styles.rcard}>
+                      <div className={styles.rtop}>
+                        <div className={styles.rid}>{filename}</div>
+                        <div className={styles.rmeta}>
+                          <span className={`${styles.badge} ${styles.bShot}`}>{type}</span>
+                          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{tool}</span>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'flex-start' }}>
+                        <div className={styles.rthumb}><i className="ti ti-photo" style={{ fontSize: 16, color: 'var(--color-text-tertiary)' }} /></div>
+                        <div className={styles.rprompt}>{promptEn}</div>
+                      </div>
+                      <div className={styles.rfoot}>
+                        <div className={styles.rstat}><i className="ti ti-clock" style={{ fontSize: 11 }} />{date}</div>
+                        <div className={styles.rstat}><i className="ti ti-versions" style={{ fontSize: 11 }} />V{version}</div>
+                        <div className={styles.ract}>
+                          <button className={styles.btnSm} onClick={() => openFolder(r.file.substring(0, r.file.lastIndexOf('/')))}>
+                            <i className="ti ti-folder-open" style={{ fontSize: 10 }} />경로 열기
+                          </button>
+                        </div>
                       </div>
                     </div>
-                    <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'flex-start' }}>
-                      <div className={styles.rthumb}><i className={`ti ${r.icon}`} style={{ fontSize: 16, color: 'var(--color-text-tertiary)' }} /></div>
-                      <div className={styles.rprompt}>{r.prompt}</div>
-                    </div>
-                    <div className={styles.rfoot}>
-                      <div className={styles.rstat}><i className="ti ti-clock" style={{ fontSize: 11 }} />{r.date}</div>
-                      <div className={styles.rstat}><i className="ti ti-versions" style={{ fontSize: 11 }} />V001</div>
-                      <div className={styles.ract}>
-                        <button className={styles.btnSm}><i className="ti ti-photo" style={{ fontSize: 10 }} />이미지 열기</button>
-                        <button className={styles.btnSm}><i className="ti ti-folder-open" style={{ fontSize: 10 }} />경로 열기</button>
-                        <button className={styles.btnSm}><i className="ti ti-edit" style={{ fontSize: 10 }} />수정</button>
-                        <button className={styles.btnSm}><i className="ti ti-send" style={{ fontSize: 10 }} />재전송</button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
