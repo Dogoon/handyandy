@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import styles from './page.module.css';
-import { pingAgent } from './lib/agent';
+import { pingAgent, savePrompt, openFolder } from './lib/agent';
 
 type WorkMode = 'shot' | 'video' | 'asset' | 'design';
 type Screen = 'create' | 'search' | 'assets' | 'shots' | 'settings';
@@ -68,12 +68,19 @@ export default function Home() {
   const [extraTools, setExtraTools] = useState<string[]>([]);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({ ChatGPT: '', Claude: '', Kling: '' });
   const [agentConnected, setAgentConnected] = useState(false);
+  const [rootPath, setRootPath] = useState('');
+  const [saveMsg, setSaveMsg] = useState('');
 
   useEffect(() => {
     const check = async () => setAgentConnected(await pingAgent());
     check();
     const interval = setInterval(check, 5000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('handyandy_root');
+    if (saved) setRootPath(saved);
   }, []);
 
   const proj = PROJECTS[projIdx];
@@ -111,6 +118,31 @@ export default function Home() {
   };
 
   const setZone = (key: string, val: string) => setZones(z => ({ ...z, [key]: val }));
+
+  const handleSave = async () => {
+    if (!rootPath) { setSaveMsg('설정에서 저장 경로를 먼저 지정해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    if (!prevEn) { setSaveMsg('프롬프트를 먼저 생성해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    const name = buildName();
+    const relPath = buildPath();
+    const filePath = `${rootPath}/${proj.code}/${relPath}${name}.json`;
+    const data = {
+      filename: name, project: proj.code, type: curType, tool: selectedTool,
+      ep: ep.padStart(3,'0'), sc: sc.padStart(3,'0'), cut: cut.padStart(3,'0'),
+      extra1: ex1, extra2: ex2, version: '001',
+      zones, prompt_en: prevEn, prompt_ko: prevKo,
+      created_at: new Date().toISOString().split('T')[0],
+    };
+    const result = await savePrompt(filePath, data);
+    setSaveMsg(result.ok ? '저장 완료!' : `저장 실패: ${result.error}`);
+    setTimeout(() => setSaveMsg(''), 3000);
+  };
+
+  const handleOpenFolder = async () => {
+    if (!rootPath) { setSaveMsg('설정에서 저장 경로를 먼저 지정해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    const relPath = buildPath();
+    const folder = `${rootPath}/${proj.code}/${relPath}`;
+    await openFolder(folder);
+  };
 
   const screenTitle: Record<Screen, string> = {
     create: '새 프롬프트 생성', search: '프롬프트 검색',
@@ -306,7 +338,7 @@ export default function Home() {
               <div className={styles.pathBar}>
                 <i className="ti ti-folder" style={{ fontSize: 12 }} />
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{buildPath()}<strong style={{ color: 'var(--color-text-info)' }}>{buildName()}.json</strong></span>
-                <button className={styles.btnSm}><i className="ti ti-folder-open" style={{ fontSize: 11 }} />폴더 열기</button>
+                <button className={styles.btnSm} onClick={handleOpenFolder}><i className="ti ti-folder-open" style={{ fontSize: 11 }} />폴더 열기</button>
               </div>
             </div>
 
@@ -352,8 +384,9 @@ export default function Home() {
                 <button className={styles.btn} onClick={() => { setPrevEn('A young male hero standing at the edge of a dark forest at dusk, holding a sword. Dramatic low-key lighting, wide shot, cinematic, 16:9.'); setPrevKo('황혼 무렵 어두운 숲 입구에 서 있는 젊은 남성 영웅, 검을 들고 있음. 극적인 로우키 조명, 와이드샷, 시네마틱, 16:9.'); }}>
                   <i className="ti ti-sparkles" />프롬프트 생성
                 </button>
-                <button className={`${styles.btn} ${styles.btnP}`}><i className="ti ti-send" />저장 후 전송</button>
+                <button className={`${styles.btn} ${styles.btnP}`} onClick={handleSave}><i className="ti ti-send" />저장 후 전송</button>
               </div>
+              {saveMsg && <div style={{ fontSize: 11, color: saveMsg.includes('완료') ? 'var(--color-text-success)' : 'var(--color-text-danger)', marginTop: 4 }}>{saveMsg}</div>}
             </div>
           </div>
         )}
@@ -505,8 +538,13 @@ export default function Home() {
             <div className={styles.settingGroup}>
               <div className={styles.settingHd}>기본 설정</div>
               <div className={styles.settingRow}>
-                <div><div className={styles.settingLabel}>기본 저장 경로</div><div className={styles.settingSub}>프로젝트 루트 폴더</div></div>
-                <button className={styles.btn}><i className="ti ti-folder-open" style={{ fontSize: 11 }} />경로 선택</button>
+                <div>
+                  <div className={styles.settingLabel}>기본 저장 경로</div>
+                  <div className={styles.settingSub}>{rootPath || '경로가 설정되지 않았습니다.'}</div>
+                </div>
+                <input type="text" placeholder="/Users/dogoon/Desktop" value={rootPath}
+                  onChange={e => { setRootPath(e.target.value); localStorage.setItem('handyandy_root', e.target.value); }}
+                  style={{ fontSize: 11, padding: '4px 7px', border: '0.5px solid var(--color-border-secondary)', borderRadius: 'var(--border-radius-md)', background: 'var(--color-background-primary)', color: 'var(--color-text-primary)', width: 180 }} />
               </div>
               <div className={styles.settingRow}>
                 <div><div className={styles.settingLabel}>프리셋 관리</div><div className={styles.settingSub}>드롭다운 항목 편집</div></div>
