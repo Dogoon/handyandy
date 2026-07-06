@@ -103,6 +103,57 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_json({"ok": False, "error": str(e)}, 500)
 
+        elif path == "/scan-assets":
+            try:
+                root = body.get("root", "")
+                assets = {"CHR": [], "PROP": [], "BG": [], "DES": []}
+                folder_map = {"characters": "CHR", "props": "PROP", "backgrounds": "BG", "design": "DES"}
+                base = Path(root) / "_assets" / "prompts"
+                if base.is_dir():
+                    for folder, type_key in folder_map.items():
+                        folder_path = base / folder
+                        if folder_path.is_dir():
+                            seen = {}
+                            for p in folder_path.rglob("*.json"):
+                                try:
+                                    with open(p, encoding="utf-8") as f:
+                                        data = json.load(f)
+                                    name = data.get("filename", p.stem)
+                                    ver = f"V{data.get('version', '001')}"
+                                    base_name = "_".join(name.split("_")[2:-1]) if "_" in name else name
+                                    if base_name not in seen:
+                                        seen[base_name] = []
+                                    seen[base_name].append(ver)
+                                except Exception:
+                                    continue
+                            for name, vers in seen.items():
+                                assets[type_key].append({"name": name, "versions": vers})
+                self.send_json({"ok": True, "assets": assets})
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)}, 500)
+
+        elif path == "/scan-shots":
+            try:
+                root = body.get("root", "")
+                shots = {}
+                base = Path(root) / "prompts"
+                if base.is_dir():
+                    for ep_dir in sorted(base.iterdir()):
+                        if not ep_dir.is_dir(): continue
+                        ep = ep_dir.name
+                        shots[ep] = {}
+                        for sc_dir in sorted(ep_dir.iterdir()):
+                            if not sc_dir.is_dir(): continue
+                            sc = sc_dir.name
+                            shots[ep][sc] = []
+                            for cut_dir in sorted(sc_dir.iterdir()):
+                                if not cut_dir.is_dir(): continue
+                                has = any(cut_dir.glob("*.json"))
+                                shots[ep][sc].append({"cut": cut_dir.name, "has": has})
+                self.send_json({"ok": True, "shots": shots})
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)}, 500)
+
         else:
             self.send_json({"error": "Not found"}, 404)
 

@@ -45,6 +45,28 @@ export async function searchPrompts(root: string, query: string): Promise<{ ok: 
   return res.json();
 }
 
+export async function scanAssets(root: string): Promise<{ ok: boolean; assets?: Record<string, {name: string; versions: string[]}[]>; error?: string }> {
+  const url = await findAgentUrl();
+  if (!url) return { ok: false, error: '에이전트가 실행중이지 않습니다.' };
+  const res = await fetch(`${url}/scan-assets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ root }),
+  });
+  return res.json();
+}
+
+export async function scanShots(root: string): Promise<{ ok: boolean; shots?: Record<string, Record<string, {cut: string; has: boolean}[]>>; error?: string }> {
+  const url = await findAgentUrl();
+  if (!url) return { ok: false, error: '에이전트가 실행중이지 않습니다.' };
+  const res = await fetch(`${url}/scan-shots`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ root }),
+  });
+  return res.json();
+}
+
 export async function openFolder(folderPath: string): Promise<{ ok: boolean; error?: string }> {
   const url = await findAgentUrl();
   if (!url) return { ok: false, error: '에이전트가 실행중이지 않습니다.' };

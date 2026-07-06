@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import styles from './page.module.css';
-import { pingAgent, savePrompt, openFolder, searchPrompts } from './lib/agent';
+import { pingAgent, savePrompt, openFolder, searchPrompts, scanAssets, scanShots } from './lib/agent';
 
 type WorkMode = 'shot' | 'video' | 'asset' | 'design';
 type Screen = 'create' | 'search' | 'assets' | 'shots' | 'settings';
@@ -63,6 +63,8 @@ export default function Home() {
   const [searchResults, setSearchResults] = useState<{file: string; data: Record<string, unknown>}[]>([]);
   const [searchScope, setSearchScope] = useState('current');
   const [searching, setSearching] = useState(false);
+  const [assets, setAssets] = useState<Record<string, {name: string; versions: string[]}[]>>({});
+  const [shots, setShots] = useState<Record<string, Record<string, {cut: string; has: boolean}[]>>>({});
   const [addToolOpen, setAddToolOpen] = useState(false);
   const [toolStep, setToolStep] = useState<'pick' | 'key'>('pick');
   const [pendToolName, setPendToolName] = useState('');
@@ -87,6 +89,18 @@ export default function Home() {
   }, []);
 
   const proj = PROJECTS[projIdx];
+
+  const loadAssets = async () => {
+    if (!rootPath) return;
+    const result = await scanAssets(`${rootPath}/${proj.code}`);
+    if (result.ok && result.assets) setAssets(result.assets);
+  };
+
+  const loadShots = async () => {
+    if (!rootPath) return;
+    const result = await scanShots(`${rootPath}/${proj.code}`);
+    if (result.ok && result.shots) setShots(result.shots);
+  };
 
   const buildName = () => {
     if (curMode === 'shot' || curMode === 'video') {
@@ -274,7 +288,11 @@ export default function Home() {
           <div className={styles.navSec}>프로젝트</div>
           {navItems.slice(2).map(item => (
             <div key={item.id} className={`${styles.navItem} ${screen === item.id ? styles.navItemActive : ''}`}
-              onClick={() => setScreen(item.id)}>
+              onClick={() => {
+                setScreen(item.id);
+                if (item.id === 'assets') loadAssets();
+                if (item.id === 'shots') loadShots();
+              }}>
               <i className={`ti ${item.icon}`} />
               {item.label}
             </div>
@@ -488,41 +506,50 @@ export default function Home() {
         {screen === 'assets' && (
           <div className={styles.screen}>
             {[
-              { icon: 'ti-user', label: '캐릭터 (CHR)', items: [{ name: 'Hero', vers: ['V001', 'V002'] }, { name: 'Villain', vers: ['V001'] }] },
-              { icon: 'ti-box', label: '프랍 (PROP)', items: [{ name: 'Sword', vers: ['V001'] }] },
-              { icon: 'ti-mountain', label: '배경 (BG)', items: [{ name: 'Forest_day', vers: ['V001', 'V002'] }] },
-            ].map(g => (
-              <div key={g.label} className={styles.assetGroup}>
-                <div className={styles.assetGroupHd}><i className={`ti ${g.icon}`} />{g.label}</div>
-                {g.items.map(item => (
-                  <div key={item.name} className={styles.assetRow}>
-                    <div className={styles.assetName}>{item.name}</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <div className={styles.verTags}>{item.vers.map(v => <span key={v} className={styles.verTag}>{v}</span>)}</div>
-                      <button className={styles.btnSm}><i className="ti ti-folder-open" style={{ fontSize: 10 }} />폴더</button>
+              { type: 'CHR', icon: 'ti-user', label: '캐릭터 (CHR)' },
+              { type: 'PROP', icon: 'ti-box', label: '프랍 (PROP)' },
+              { type: 'BG', icon: 'ti-mountain', label: '배경 (BG)' },
+              { type: 'DES', icon: 'ti-bulb', label: '디자인 이미지 (DES)' },
+            ].map(g => {
+              const items = assets[g.type] || [];
+              return (
+                <div key={g.type} className={styles.assetGroup}>
+                  <div className={styles.assetGroupHd}><i className={`ti ${g.icon}`} />{g.label}</div>
+                  {items.length === 0 ? (
+                    <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--color-text-tertiary)' }}>어셋 없음</div>
+                  ) : items.map(item => (
+                    <div key={item.name} className={styles.assetRow}>
+                      <div className={styles.assetName}>{item.name}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div className={styles.verTags}>{item.versions.map(v => <span key={v} className={styles.verTag}>{v}</span>)}</div>
+                        <button className={styles.btnSm} onClick={() => openFolder(`${rootPath}/${proj.code}/_assets/prompts`)}><i className="ti ti-folder-open" style={{ fontSize: 10 }} />폴더</button>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            ))}
+                  ))}
+                </div>
+              );
+            })}
           </div>
         )}
 
         {/* 샷 목록 */}
         {screen === 'shots' && (
           <div className={styles.screen}>
-            {[
-              { ep: 'EP001', scenes: [{ sc: 'SC001', cuts: [{ n: 'CUT001', has: true }, { n: 'CUT002', has: true }, { n: 'CUT003', has: false }] }, { sc: 'SC003', cuts: [{ n: 'CUT001', has: true }, { n: 'CUT002', has: true }, { n: 'CUT003', has: true }, { n: 'CUT004', has: true }, { n: 'CUT005', has: true }, { n: 'CUT006', has: false }] }] },
-              { ep: 'EP002', scenes: [{ sc: 'SC001', cuts: [{ n: 'CUT001', has: true }, { n: 'CUT002', has: false }, { n: 'CUT003', has: false }] }] },
-            ].map(ep => (
-              <div key={ep.ep} className={styles.epBlock}>
-                <div className={styles.epHd}><i className="ti ti-chevron-down" style={{ fontSize: 11 }} />{ep.ep}</div>
-                {ep.scenes.map(sc => (
-                  <div key={sc.sc} className={styles.scBlock}>
-                    <div className={styles.scHd}><i className="ti ti-minus" style={{ fontSize: 10 }} />{sc.sc}</div>
+            {Object.keys(shots).length === 0 ? (
+              <div className={styles.searchEmpty}>
+                <i className="ti ti-layout-list" style={{ fontSize: 28, color: 'var(--color-text-tertiary)' }} />
+                <p>샷 데이터가 없습니다</p>
+                <small>prompts 폴더에 EP/SC/CUT 구조가 있어야 합니다</small>
+              </div>
+            ) : Object.entries(shots).map(([ep, scenes]) => (
+              <div key={ep} className={styles.epBlock}>
+                <div className={styles.epHd}><i className="ti ti-chevron-down" style={{ fontSize: 11 }} />{ep}</div>
+                {Object.entries(scenes).map(([sc, cuts]) => (
+                  <div key={sc} className={styles.scBlock}>
+                    <div className={styles.scHd}><i className="ti ti-minus" style={{ fontSize: 10 }} />{sc}</div>
                     <div className={styles.cutRow}>
-                      {sc.cuts.map(c => (
-                        <span key={c.n} className={`${styles.cutTag} ${c.has ? styles.cutTagHas : styles.cutTagNo}`}>{c.n}</span>
+                      {cuts.map(c => (
+                        <span key={c.cut} className={`${styles.cutTag} ${c.has ? styles.cutTagHas : styles.cutTagNo}`}>{c.cut}</span>
                       ))}
                     </div>
                   </div>
