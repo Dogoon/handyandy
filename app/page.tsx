@@ -1,15 +1,18 @@
 'use client';
 import { useState, useEffect } from 'react';
 import styles from './page.module.css';
-import { pingAgent, savePrompt, openFolder, searchPrompts, scanAssets, scanShots } from './lib/agent';
+import { pingAgent, savePrompt, checkFile, nextVersion, pickFolder, pickFile, openFolder, openFile, searchPrompts, scanAssets, scanShots, generatePrompt, generateImage, saveSettings, loadSettings, fetchModels, getImage, createProject, savePreset } from './lib/agent';
 
 type WorkMode = 'shot' | 'video' | 'asset' | 'design';
 type Screen = 'create' | 'search' | 'assets' | 'shots' | 'settings';
+type ProjStructure = { ep: boolean; sc: boolean; cut: boolean };
 
-const PROJECTS = [
-  { code: 'AN2601', name: '첫번째 애니메이션' },
-  { code: 'CM2601', name: '○○브랜드 광고' },
-  { code: 'MV2512', name: '뮤직비디오' },
+const DEFAULT_STRUCTURE: ProjStructure = { ep: true, sc: true, cut: true };
+
+type Project = { code: string; name: string; root: string; structure: ProjStructure };
+
+const DEFAULT_PROJECTS: Project[] = [
+  { code: 'AN2601', name: '첫번째 애니메이션', root: '', structure: DEFAULT_STRUCTURE },
 ];
 
 const WORK_TYPES = [
@@ -39,12 +42,27 @@ const ZONES = [
   { key: 'negative', label: 'Negative', tip: '제외할 요소', type: 'select', options: ['blurry', 'watermark', 'text'] },
 ];
 
+function Thumbnail({ jsonPath }: { jsonPath: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    const imgPath = jsonPath.replace('/prompts/', '/images/').replace('.json', '.png');
+    getImage(imgPath).then(r => { if (r.ok && r.data) setSrc(r.data); });
+  }, [jsonPath]);
+  return (
+    <div style={{ width: 64, height: 48, borderRadius: 4, overflow: 'hidden', background: 'var(--color-background-tertiary)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {src
+        ? <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        : <i className="ti ti-photo" style={{ fontSize: 16, color: 'var(--color-text-tertiary)' }} />}
+    </div>
+  );
+}
+
 export default function Home() {
   const [screen, setScreen] = useState<Screen>('create');
   const [projIdx, setProjIdx] = useState(0);
   const [ddOpen, setDdOpen] = useState(false);
-  const [curType, setCurType] = useState('SHOT');
-  const [curMode, setCurMode] = useState<WorkMode>('shot');
+  const [curType, setCurType] = useState('DES');
+  const [curMode, setCurMode] = useState<WorkMode>('design');
   const [warnPending, setWarnPending] = useState<{ type: string; mode: WorkMode } | null>(null);
   const [selectedTool, setSelectedTool] = useState('ChatGPT');
   const [ep, setEp] = useState('001');
@@ -73,39 +91,113 @@ export default function Home() {
   const [extraTools, setExtraTools] = useState<string[]>([]);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({ ChatGPT: '', Claude: '', Kling: '' });
   const [agentConnected, setAgentConnected] = useState(false);
-  const [rootPath, setRootPath] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [overwritePending, setOverwritePending] = useState<{ filePath: string; data: object } | null>(null);
+  const [lastSavedPath, setLastSavedPath] = useState<string | null>(null);
+  const [generatingImg, setGeneratingImg] = useState(false);
+  const [projects, setProjects] = useState<Project[]>(DEFAULT_PROJECTS);
+  const [projModal, setProjModal] = useState<{ mode: 'create' | 'edit'; editIdx?: number } | null>(null);
+  const [modalCode, setModalCode] = useState('');
+  const [modalName, setModalName] = useState('');
+  const [modalRoot, setModalRoot] = useState('');
+  const [modalStruct, setModalStruct] = useState<ProjStructure>(DEFAULT_STRUCTURE);
+  const [gptModel, setGptModel] = useState('gpt-4o-mini');
+  const [modelList, setModelList] = useState<string[]>(['gpt-4o-mini', 'gpt-4o']);
+  const [imageModel, setImageModel] = useState('dall-e-3');
+  const [imageModelList, setImageModelList] = useState<string[]>(['dall-e-3', 'dall-e-2']);
+  const [fetchingModels, setFetchingModels] = useState(false);
 
   useEffect(() => {
-    const check = async () => setAgentConnected(await pingAgent());
+    const check = async () => {
+      const connected = await pingAgent();
+      setAgentConnected(connected);
+      if (connected) handleLoadSettings();
+    };
     check();
-    const interval = setInterval(check, 5000);
+    const interval = setInterval(async () => setAgentConnected(await pingAgent()), 5000);
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    const saved = localStorage.getItem('handyandy_root');
-    if (saved) setRootPath(saved);
-  }, []);
+  const handleLoadSettings = async () => {
+    const result = await loadSettings('');
+    if (result.ok && result.data) {
+      if (result.data.private) {
+        const keys = result.data.private as Record<string, string>;
+        setApiKeys(k => ({ ...k, ...keys }));
+      }
+      if (result.data.settings) {
+        const s = result.data.settings as Record<string, unknown>;
+        if (s.projects) {
+          const loaded = (s.projects as Partial<Project>[]).map(p => ({ code: p.code ?? '', name: p.name ?? '', root: (p as Record<string,unknown>).root as string ?? (p as Record<string,unknown>).path as string ?? '', structure: p.structure ?? DEFAULT_STRUCTURE }));
+          setProjects(loaded);
+          if (s.lastProjCode) {
+            const idx = loaded.findIndex(p => p.code === s.lastProjCode);
+            if (idx >= 0) setProjIdx(idx);
+          }
+        }
+        if (s.gptModel) setGptModel(s.gptModel as string);
+        if (s.modelList) setModelList(s.modelList as string[]);
+        if (s.imageModel) setImageModel(s.imageModel as string);
+        if (s.imageModelList) setImageModelList(s.imageModelList as string[]);
+      }
+    }
+  };
 
-  const proj = PROJECTS[projIdx];
+  const proj: Project = projects[Math.min(projIdx, projects.length - 1)] || { code: '', name: '', root: '', structure: DEFAULT_STRUCTURE };
+
+  const openProjModal = (mode: 'create' | 'edit', editIdx?: number) => {
+    if (mode === 'edit' && editIdx !== undefined) {
+      const p = projects[editIdx];
+      setModalCode(p.code); setModalName(p.name); setModalRoot(p.root); setModalStruct(p.structure);
+    } else {
+      setModalCode(''); setModalName(''); setModalRoot(''); setModalStruct(DEFAULT_STRUCTURE);
+    }
+    setProjModal({ mode, editIdx });
+  };
+
+  const handleProjModalConfirm = async () => {
+    if (!modalCode.trim()) return;
+    const entry: Project = { code: modalCode.trim(), name: modalName.trim() || modalCode.trim(), root: modalRoot, structure: modalStruct };
+    let updated: Project[];
+    if (projModal?.mode === 'edit' && projModal.editIdx !== undefined) {
+      updated = projects.map((p, i) => i === projModal.editIdx ? entry : p);
+    } else {
+      if (modalRoot) {
+        const result = await createProject(modalRoot, entry.code);
+        if (!result.ok) { setSaveMsg(`폴더 생성 실패: ${result.error}`); setTimeout(() => setSaveMsg(''), 3000); return; }
+        entry.root = result.path ?? entry.root;
+      }
+      updated = [...projects, entry];
+    }
+    await saveProjects(updated);
+    setProjModal(null);
+  };
 
   const loadAssets = async () => {
-    if (!rootPath) return;
-    const result = await scanAssets(`${rootPath}/${proj.code}`);
+    if (!proj.root) return;
+    const result = await scanAssets(proj.root);
     if (result.ok && result.assets) setAssets(result.assets);
   };
 
   const loadShots = async () => {
-    if (!rootPath) return;
-    const result = await scanShots(`${rootPath}/${proj.code}`);
+    if (!proj.root) return;
+    const result = await scanShots(proj.root);
     if (result.ok && result.shots) setShots(result.shots);
   };
 
+  const struct = proj.structure ?? DEFAULT_STRUCTURE;
+
   const buildName = () => {
     if (curMode === 'shot' || curMode === 'video') {
-      const e = ep.padStart(3, '0'), s = sc.padStart(3, '0'), c = cut.padStart(3, '0');
-      return `${proj.code}_${curType}_EP${e}_SC${s}_CUT${c}${ex1 ? '_' + ex1 : ''}${ex2 ? '_' + ex2 : ''}_V001`;
+      const parts = [proj.code, curType];
+      if (struct.ep) parts.push(`EP${ep.padStart(3, '0')}`);
+      if (struct.sc) parts.push(`SC${sc.padStart(3, '0')}`);
+      if (struct.cut) parts.push(`CUT${cut.padStart(3, '0')}`);
+      if (ex1) parts.push(ex1);
+      if (ex2) parts.push(ex2);
+      parts.push('V001');
+      return parts.join('_');
     } else {
       const n = aname || 'Name';
       return `${proj.code}_${curType}_${n}${aex1 ? '_' + aex1 : ''}${aex2 ? '_' + aex2 : ''}_V001`;
@@ -114,8 +206,11 @@ export default function Home() {
 
   const buildPath = () => {
     if (curMode === 'shot' || curMode === 'video') {
-      const e = ep.padStart(3, '0'), s = sc.padStart(3, '0'), c = cut.padStart(3, '0');
-      return `prompts/EP${e}/SC${s}/CUT${c}/`;
+      let path = 'prompts/';
+      if (struct.ep) path += `EP${ep.padStart(3, '0')}/`;
+      if (struct.sc) path += `SC${sc.padStart(3, '0')}/`;
+      if (struct.cut) path += `CUT${cut.padStart(3, '0')}/`;
+      return path;
     }
     const fd = curType === 'CHR' ? 'characters' : curType === 'PROP' ? 'props' : curType === 'BG' ? 'backgrounds' : 'design';
     return `_assets/prompts/${fd}/`;
@@ -136,25 +231,78 @@ export default function Home() {
 
   const setZone = (key: string, val: string) => setZones(z => ({ ...z, [key]: val }));
 
+  const handleGenerate = async () => {
+    const apiKey = apiKeys['ChatGPT'];
+    if (!apiKey) { setSaveMsg('설정에서 ChatGPT API 키를 입력해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    if (!hasInput()) { setSaveMsg('프롬프트 영역에 내용을 입력해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    setGenerating(true);
+    const result = await generatePrompt(apiKey, zones, curType, gptModel);
+    if (result.ok) {
+      setPrevEn(result.prompt_en || '');
+      setPrevKo(result.prompt_ko || '');
+    } else {
+      setSaveMsg(`생성 실패: ${result.error}`);
+      setTimeout(() => setSaveMsg(''), 3000);
+    }
+    setGenerating(false);
+  };
+
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
-    if (!rootPath) { setSaveMsg('설정에서 저장 경로를 먼저 지정해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
     setSearching(true);
     setSearched(true);
-    const root = searchScope === 'all'
-      ? rootPath
-      : `${rootPath}/${searchScope === 'current' ? proj.code : searchScope}`;
+    let root = proj.root;
+    if (searchScope === 'all') {
+      const paths = projects.map(p => p.root).filter(Boolean);
+      root = paths[0] ?? '';
+    } else if (searchScope !== 'current') {
+      root = projects.find(p => p.code === searchScope)?.root ?? '';
+    }
     const result = await searchPrompts(root, searchQuery);
     setSearchResults(result.ok && result.results ? result.results as {file: string; data: Record<string, unknown>}[] : []);
     setSearching(false);
   };
 
+  const doSave = async (filePath: string, data: object) => {
+    const result = await savePrompt(filePath, data);
+    if (!result.ok) { setSaveMsg(`저장 실패: ${result.error}`); setTimeout(() => setSaveMsg(''), 3000); return; }
+    setLastSavedPath(filePath);
+    setSaveMsg('프롬프트 저장 완료!');
+    setTimeout(() => setSaveMsg(''), 3000);
+  };
+
+  const handleGenerateImage = async () => {
+    if (!lastSavedPath) { setSaveMsg('먼저 프롬프트를 저장해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    if (!prevEn) { setSaveMsg('프롬프트가 없습니다.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    const apiKey = apiKeys['ChatGPT'];
+    if (!apiKey) { setSaveMsg('ChatGPT API 키가 없습니다.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    setGeneratingImg(true);
+    setSaveMsg('이미지 생성 중...');
+    const imgPath = lastSavedPath.replace('/prompts/', '/images/').replace(/\.json$/, '.png');
+    const imgResult = await generateImage(apiKey, prevEn, imgPath, imageModel);
+    setSaveMsg(imgResult.ok ? '이미지 생성 완료!' : `이미지 생성 실패: ${imgResult.error}`);
+    setGeneratingImg(false);
+    setTimeout(() => setSaveMsg(''), 4000);
+  };
+
+  const ensureProjRoot = async (): Promise<string | null> => {
+    if (proj.root) return proj.root;
+    setSaveMsg('프로젝트 루트 경로가 없습니다. 폴더를 선택해주세요...');
+    const picked = await pickFolder();
+    if (!picked.ok || !picked.path) { setSaveMsg('취소됨'); setTimeout(() => setSaveMsg(''), 2000); return null; }
+    const updated = projects.map((p, i) => i === projIdx ? { ...p, root: picked.path! } : p);
+    setProjects(updated);
+    await saveSettings('', { projects: updated, gptModel, modelList, imageModel, imageModelList }, false);
+    return picked.path!;
+  };
+
   const handleSave = async () => {
-    if (!rootPath) { setSaveMsg('설정에서 저장 경로를 먼저 지정해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    const root = await ensureProjRoot();
+    if (!root) return;
     if (!prevEn) { setSaveMsg('프롬프트를 먼저 생성해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
     const name = buildName();
     const relPath = buildPath();
-    const filePath = `${rootPath}/${proj.code}/${relPath}${name}.json`;
+    const filePath = `${root}/${relPath}${name}.json`;
     const data = {
       filename: name, project: proj.code, type: curType, tool: selectedTool,
       ep: ep.padStart(3,'0'), sc: sc.padStart(3,'0'), cut: cut.padStart(3,'0'),
@@ -162,15 +310,75 @@ export default function Home() {
       zones, prompt_en: prevEn, prompt_ko: prevKo,
       created_at: new Date().toISOString().split('T')[0],
     };
-    const result = await savePrompt(filePath, data);
-    setSaveMsg(result.ok ? '저장 완료!' : `저장 실패: ${result.error}`);
+    const check = await checkFile(filePath);
+    if (check.exists) {
+      setOverwritePending({ filePath, data });
+      return;
+    }
+    await doSave(filePath, data);
+  };
+
+  const saveProjects = async (updated: Project[]) => {
+    setProjects(updated);
+    await saveSettings('', { projects: updated, gptModel, modelList, imageModel, imageModelList }, false);
+  };
+
+  const saveModel = async (model: string, list: string[], imgModel?: string, imgList?: string[]) => {
+    const newGpt = model; const newList = list;
+    const newImg = imgModel ?? imageModel; const newImgList = imgList ?? imageModelList;
+    setGptModel(newGpt); setModelList(newList);
+    setImageModel(newImg); setImageModelList(newImgList);
+    await saveSettings('', { projects, gptModel: newGpt, modelList: newList, imageModel: newImg, imageModelList: newImgList }, false);
+  };
+
+  const handleSavePreset = async () => {
+    const root = await ensureProjRoot();
+    if (!root) return;
+    const name = buildName();
+    const filename = `TPL_${name}.json`;
+    const data = {
+      curType, curMode, selectedTool,
+      ep, sc, cut, ex1, ex2, aname, aex1, aex2,
+      zones, prompt_en: prevEn, prompt_ko: prevKo,
+    };
+    const result = await savePreset(root, filename, data);
+    setSaveMsg(result.ok ? `프리셋 저장 완료: ${filename}` : `저장 실패: ${result.error}`);
     setTimeout(() => setSaveMsg(''), 3000);
   };
 
+  const handleLoadPreset = async () => {
+    const initialDir = proj.root ? `${proj.root}/presets` : '~';
+    const result = await pickFile(initialDir);
+    if (!result.ok || !result.data) {
+      if (result.error !== '취소됨') { setSaveMsg(`불러오기 실패: ${result.error}`); setTimeout(() => setSaveMsg(''), 3000); }
+      return;
+    }
+    applyPreset(result.data);
+    setSaveMsg(`프리셋 적용: ${result.name}`);
+    setTimeout(() => setSaveMsg(''), 3000);
+  };
+
+  const applyPreset = (data: Record<string, unknown>) => {
+    if (data.curType) { setCurType(data.curType as string); setCurMode(data.curMode as WorkMode); }
+    if (data.selectedTool) setSelectedTool(data.selectedTool as string);
+    if (data.ep) setEp(data.ep as string);
+    if (data.sc) setSc(data.sc as string);
+    if (data.cut) setCut(data.cut as string);
+    if (data.ex1 !== undefined) setEx1(data.ex1 as string);
+    if (data.ex2 !== undefined) setEx2(data.ex2 as string);
+    if (data.aname !== undefined) setAname(data.aname as string);
+    if (data.aex1 !== undefined) setAex1(data.aex1 as string);
+    if (data.aex2 !== undefined) setAex2(data.aex2 as string);
+    if (data.zones) setZones(data.zones as Record<string, string>);
+    if (data.prompt_en) setPrevEn(data.prompt_en as string);
+    if (data.prompt_ko) setPrevKo(data.prompt_ko as string);
+  };
+
   const handleOpenFolder = async () => {
-    if (!rootPath) { setSaveMsg('설정에서 저장 경로를 먼저 지정해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+    const root = await ensureProjRoot();
+    if (!root) return;
     const relPath = buildPath();
-    const folder = `${rootPath}/${proj.code}/${relPath}`;
+    const folder = `${root}/${relPath}`;
     await openFolder(folder);
   };
 
@@ -199,6 +407,73 @@ export default function Home() {
             <div className={styles.modalBtns}>
               <button className={styles.btn} onClick={() => setWarnPending(null)}>취소</button>
               <button className={`${styles.btn} ${styles.btnP}`} onClick={() => applyType(warnPending.type, warnPending.mode)}>확인</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 덮어쓰기 확인 모달 */}
+      {overwritePending && (
+        <div className={styles.modalBg}>
+          <div className={styles.modal}>
+            <div className={styles.modalTitle}>파일 이미 존재</div>
+            <div className={styles.modalMsg}>같은 이름의 파일이 이미 있습니다.<br />JSON과 이미지를 덮어씁니다.</div>
+            <div className={styles.modalBtns}>
+              <button className={styles.btn} onClick={() => setOverwritePending(null)}>취소</button>
+              <button className={styles.btn} onClick={async () => {
+                const p = overwritePending;
+                setOverwritePending(null);
+                const folder = p.filePath.substring(0, p.filePath.lastIndexOf('/'));
+                const base = p.filePath.replace(/\.json$/, '').split('/').pop()!;
+                const r = await nextVersion(folder, base);
+                if (!r.ok) { setSaveMsg(`버전업 실패: ${r.error}`); setTimeout(() => setSaveMsg(''), 3000); return; }
+                const newPath = `${folder}/${r.next_name}`;
+                const newBaseName = r.next_name!.replace('.json', '');
+                await doSave(newPath, { ...(p.data as Record<string,unknown>), filename: newBaseName });
+              }}>버전업</button>
+              <button className={`${styles.btn} ${styles.btnP}`} onClick={async () => {
+                const p = overwritePending;
+                setOverwritePending(null);
+                await doSave(p.filePath, p.data);
+              }}>덮어쓰기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 프리셋 불러오기 모달 */}
+
+      {/* 프로젝트 생성/수정 모달 */}
+      {projModal && (
+        <div className={styles.modalBg}>
+          <div className={styles.modal}>
+            <div className={styles.modalTitle}>{projModal.mode === 'create' ? '새 프로젝트' : '프로젝트 수정'}</div>
+            <input className={styles.modalInput} placeholder="프로젝트 코드 (예: AN2601)" value={modalCode} onChange={e => setModalCode(e.target.value.toUpperCase())} />
+            <input className={styles.modalInput} placeholder="프로젝트 이름" value={modalName} onChange={e => setModalName(e.target.value)} />
+            <div style={{ display: 'flex', gap: 12, margin: '8px 0', fontSize: 12 }}>
+              {(['ep', 'sc', 'cut'] as const).map(k => (
+                <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', textTransform: 'uppercase' }}>
+                  <input type="checkbox" checked={modalStruct[k]} onChange={e => setModalStruct(s => ({ ...s, [k]: e.target.checked }))} />
+                  {k}
+                </label>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
+              <div style={{ flex: 1, fontSize: 11, color: 'var(--color-text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {modalRoot ? `${modalRoot}/${modalCode || '…'}` : '상위 폴더를 선택해주세요'}
+              </div>
+              <button className={styles.btnSm} onClick={async () => {
+                const result = await pickFolder();
+                if (result.ok && result.path) setModalRoot(result.path);
+              }}>
+                <i className="ti ti-folder-open" style={{ fontSize: 11 }} />상위 폴더 선택
+              </button>
+            </div>
+            <div className={styles.modalBtns}>
+              <button className={styles.btn} onClick={() => setProjModal(null)}>취소</button>
+              <button className={`${styles.btn} ${styles.btnP}`} disabled={!modalCode.trim()} onClick={handleProjModalConfirm}>
+                {projModal.mode === 'create' ? '확인' : '수정'}
+              </button>
             </div>
           </div>
         </div>
@@ -260,20 +535,22 @@ export default function Home() {
             <i className="ti ti-chevron-down" style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }} />
             {ddOpen && (
               <div className={styles.projDd} onClick={e => e.stopPropagation()}>
-                {PROJECTS.map((p, i) => (
+                {projects.map((p, i) => (
                   <div key={p.code} className={`${styles.ddItem} ${i === projIdx ? styles.ddItemCur : ''}`}
-                    onClick={() => { setProjIdx(i); setDdOpen(false); }}>
+                    onClick={() => {
+                      setProjIdx(i); setDdOpen(false);
+                      saveSettings('', { projects, gptModel, modelList, imageModel, imageModelList, lastProjCode: p.code }, false);
+                    }}>
                     {p.name}<small>{p.code}</small>
                   </div>
                 ))}
                 <div className={styles.ddDiv} />
-                <div className={`${styles.ddItem} ${styles.ddNew}`} onClick={() => setDdOpen(false)}>
+                <div className={`${styles.ddItem} ${styles.ddNew}`} onClick={() => { setDdOpen(false); openProjModal('create'); }}>
                   <i className="ti ti-plus" style={{ fontSize: 12 }} />새 프로젝트
                 </div>
               </div>
             )}
           </div>
-          <div className={styles.changeBtn} onClick={e => { e.stopPropagation(); setDdOpen(o => !o); }}>프로젝트 변경</div>
         </div>
 
         <nav className={styles.nav}>
@@ -339,12 +616,16 @@ export default function Home() {
               <div className={styles.stepRow}><div className={styles.stepNum}>2</div><div className={styles.stepLbl}>{(curMode === 'shot' || curMode === 'video') ? '샷 정보 + 생성 툴' : '어셋 정보 + 생성 툴'}</div></div>
               {(curMode === 'shot' || curMode === 'video') ? (
                 <div className={styles.frow}>
-                  {[{ lbl: 'EP', pfx: 'EP', val: ep, set: setEp }, { lbl: 'SC', pfx: 'SC', val: sc, set: setSc }, { lbl: 'CUT', pfx: 'CUT', val: cut, set: setCut }].map(f => (
-                    <div key={f.lbl} className={styles.fl}>
+                  {[
+                    { lbl: 'EP', pfx: 'EP', val: ep, set: setEp, enabled: struct.ep },
+                    { lbl: 'SC', pfx: 'SC', val: sc, set: setSc, enabled: struct.sc },
+                    { lbl: 'CUT', pfx: 'CUT', val: cut, set: setCut, enabled: struct.cut },
+                  ].map(f => (
+                    <div key={f.lbl} className={styles.fl} style={{ opacity: f.enabled ? 1 : 0.35 }}>
                       <label>{f.lbl}</label>
                       <div className={styles.ffixed}>
                         <span className={styles.pfx}>{f.pfx}</span>
-                        <input type="text" value={f.val} maxLength={5} onChange={e => f.set(e.target.value)} style={{ width: 38 }} />
+                        <input type="text" value={f.val} maxLength={5} disabled={!f.enabled} onChange={e => f.set(e.target.value)} style={{ width: 38 }} />
                       </div>
                     </div>
                   ))}
@@ -402,25 +683,59 @@ export default function Home() {
               </div>
               <div className={styles.previewRow}>
                 <div className={styles.prevBox}>
-                  <div className={styles.prevLabel}>English</div>
+                  <div className={styles.prevLabel}>
+                    English
+                    {prevEn && <button style={{ marginLeft: 6, background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'var(--color-text-tertiary)', lineHeight: 1 }} title="복사" onClick={() => navigator.clipboard.writeText(prevEn)}><i className="ti ti-copy" style={{ fontSize: 11 }} /></button>}
+                  </div>
                   <div className={styles.prevText} style={{ fontStyle: prevEn ? 'normal' : 'italic', color: prevEn ? 'var(--color-text-secondary)' : 'var(--color-text-tertiary)' }}>
                     {prevEn || '프롬프트 생성 후 표시됩니다'}
                   </div>
                 </div>
                 <div className={styles.prevBox}>
-                  <div className={styles.prevLabel}>한국어</div>
+                  <div className={styles.prevLabel}>
+                    한국어
+                    {prevKo && <button style={{ marginLeft: 6, background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'var(--color-text-tertiary)', lineHeight: 1 }} title="복사" onClick={() => navigator.clipboard.writeText(prevKo)}><i className="ti ti-copy" style={{ fontSize: 11 }} /></button>}
+                  </div>
                   <div className={styles.prevText} style={{ fontStyle: prevKo ? 'normal' : 'italic', color: prevKo ? 'var(--color-text-secondary)' : 'var(--color-text-tertiary)' }}>
                     {prevKo || '프롬프트 생성 후 표시됩니다'}
                   </div>
                 </div>
               </div>
               <div className={styles.arow}>
-                <button className={styles.btn} onClick={() => { setPrevEn('A young male hero standing at the edge of a dark forest at dusk, holding a sword. Dramatic low-key lighting, wide shot, cinematic, 16:9.'); setPrevKo('황혼 무렵 어두운 숲 입구에 서 있는 젊은 남성 영웅, 검을 들고 있음. 극적인 로우키 조명, 와이드샷, 시네마틱, 16:9.'); }}>
-                  <i className="ti ti-sparkles" />프롬프트 생성
+                <button className={styles.btn} onClick={handleSavePreset}>
+                  <i className="ti ti-device-floppy" />설정 저장
                 </button>
-                <button className={`${styles.btn} ${styles.btnP}`} onClick={handleSave}><i className="ti ti-send" />저장 후 전송</button>
+                <button className={styles.btn} onClick={handleLoadPreset}>
+                  <i className="ti ti-download" />설정 불러오기
+                </button>
+                <div style={{ flex: 1 }} />
+                <button className={styles.btn} onClick={handleGenerate} disabled={generating}>
+                  <i className="ti ti-sparkles" />{generating ? '생성 중...' : '프롬프트 생성'}
+                </button>
+                <button className={styles.btn} onClick={handleSave}><i className="ti ti-device-floppy" />프롬프트 저장</button>
+                <button className={`${styles.btn} ${styles.btnP}`} onClick={handleGenerateImage} disabled={generatingImg || !lastSavedPath}>
+                  <i className="ti ti-photo" />{generatingImg ? '생성 중...' : '이미지 생성'}
+                </button>
               </div>
-              {saveMsg && <div style={{ fontSize: 11, color: saveMsg.includes('완료') ? 'var(--color-text-success)' : 'var(--color-text-danger)', marginTop: 4 }}>{saveMsg}</div>}
+              <div className={styles.arow} style={{ justifyContent: 'flex-end' }}>
+                <button className={styles.btn} onClick={async () => {
+                  const root = proj.root; if (!root) return;
+                  const relPath = buildPath();
+                  const imgPath = `${root}/${relPath.replace('prompts', 'images')}${buildName()}.png`;
+                  const r = await openFile(imgPath);
+                  if (!r.ok) { setSaveMsg('이미지 파일 없음'); setTimeout(() => setSaveMsg(''), 2000); }
+                }}>
+                  <i className="ti ti-photo" />이미지 열기
+                </button>
+                <button className={styles.btn} onClick={async () => {
+                  const root = proj.root; if (!root) return;
+                  const relPath = buildPath();
+                  await openFolder(`${root}/${relPath.replace('prompts', 'images')}`);
+                }}>
+                  <i className="ti ti-folder-open" />폴더 열기
+                </button>
+              </div>
+              {saveMsg && <div style={{ fontSize: 11, color: saveMsg.includes('완료') || saveMsg.includes('적용') ? 'var(--color-text-success)' : 'var(--color-text-danger)', marginTop: 4 }}>{saveMsg}</div>}
             </div>
           </div>
         )}
@@ -429,10 +744,10 @@ export default function Home() {
         {screen === 'search' && (
           <div className={styles.screen}>
             <div className={styles.searchTop}>
-              <select className={styles.scopeSel}>
+              <select className={styles.scopeSel} value={searchScope} onChange={e => setSearchScope(e.target.value)}>
                 <option value="current">{proj.code}</option>
                 <option value="all">ALL</option>
-                {PROJECTS.filter((_, i) => i !== projIdx).map(p => <option key={p.code} value={p.code}>{p.code}</option>)}
+                {projects.filter((_, i) => i !== projIdx).map(p => <option key={p.code} value={p.code}>{p.code}</option>)}
               </select>
               <div className={styles.sbar}>
                 <i className="ti ti-search" style={{ fontSize: 13, color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
@@ -482,7 +797,7 @@ export default function Home() {
                         </div>
                       </div>
                       <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'flex-start' }}>
-                        <div className={styles.rthumb}><i className="ti ti-photo" style={{ fontSize: 16, color: 'var(--color-text-tertiary)' }} /></div>
+                        <Thumbnail jsonPath={r.file} />
                         <div className={styles.rprompt}>{promptEn}</div>
                       </div>
                       <div className={styles.rfoot}>
@@ -522,7 +837,7 @@ export default function Home() {
                       <div className={styles.assetName}>{item.name}</div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <div className={styles.verTags}>{item.versions.map(v => <span key={v} className={styles.verTag}>{v}</span>)}</div>
-                        <button className={styles.btnSm} onClick={() => openFolder(`${rootPath}/${proj.code}/_assets/prompts`)}><i className="ti ti-folder-open" style={{ fontSize: 10 }} />폴더</button>
+                        <button className={styles.btnSm} onClick={() => openFolder(`${proj.root}/_assets/prompts`)}><i className="ti ti-folder-open" style={{ fontSize: 10 }} />폴더</button>
                       </div>
                     </div>
                   ))}
@@ -580,7 +895,12 @@ export default function Home() {
               {['ChatGPT', 'Claude', 'Kling'].concat(extraTools).map(t => (
                 <div key={t} className={styles.apiRow}>
                   <div className={styles.apiName}>{t}</div>
-                  <input className={styles.apiInput} type="password" placeholder="API Key" value={apiKeys[t] || ''} onChange={e => setApiKeys(k => ({ ...k, [t]: e.target.value }))} />
+                  <input className={styles.apiInput} type="password" placeholder="API Key" value={apiKeys[t] || ''}
+                    onChange={e => {
+                      const newKeys = { ...apiKeys, [t]: e.target.value };
+                      setApiKeys(newKeys);
+                      saveSettings('', newKeys, true);
+                    }} />
                   <button className={`${styles.btnSm} ${styles.btnDanger}`} onClick={() => setExtraTools(et => et.filter(x => x !== t))}>
                     <i className="ti ti-trash" style={{ fontSize: 10 }} />
                   </button>
@@ -588,16 +908,87 @@ export default function Home() {
               ))}
             </div>
             <div className={styles.settingGroup}>
-              <div className={styles.settingHd}>기본 설정</div>
+              <div className={styles.settingHd}>프로젝트 관리</div>
+              {projects.map((p, i) => (
+                <div key={p.code} className={styles.apiRow}>
+                  <div className={styles.apiName} style={{ fontWeight: 600 }}>{p.code}</div>
+                  <div style={{ flex: 1, fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                    <div>{p.name}</div>
+                    {p.root && <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>{p.root}</div>}
+                    {!p.root && <div style={{ fontSize: 10, color: 'var(--color-warn, #f59e0b)' }}>경로 없음</div>}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+                    {(['ep','sc','cut'] as const).filter(k => p.structure[k]).map(k => k.toUpperCase()).join('·')}
+                  </div>
+                  <button className={styles.btnSm} onClick={() => openProjModal('edit', i)}>
+                    <i className="ti ti-edit" style={{ fontSize: 10 }} />
+                  </button>
+                  <button className={`${styles.btnSm} ${styles.btnDanger}`} onClick={() => {
+                    const updated = projects.filter((_, j) => j !== i);
+                    if (i <= projIdx && projIdx > 0) setProjIdx(idx => idx - 1);
+                    saveProjects(updated);
+                  }}>
+                    <i className="ti ti-trash" style={{ fontSize: 10 }} />
+                  </button>
+                </div>
+              ))}
+              <div style={{ marginTop: 6 }}>
+                <button className={styles.btn} onClick={() => openProjModal('create')}>
+                  <i className="ti ti-plus" style={{ fontSize: 11 }} />새 프로젝트 추가
+                </button>
+              </div>
+            </div>
+            <div className={styles.settingGroup}>
+              <div className={styles.settingHd}>AI 모델 설정</div>
               <div className={styles.settingRow}>
                 <div>
-                  <div className={styles.settingLabel}>기본 저장 경로</div>
-                  <div className={styles.settingSub}>{rootPath || '경로가 설정되지 않았습니다.'}</div>
+                  <div className={styles.settingLabel}>ChatGPT 모델</div>
+                  <div className={styles.settingSub}>프롬프트 생성에 사용할 모델</div>
                 </div>
-                <input type="text" placeholder="/Users/dogoon/Desktop" value={rootPath}
-                  onChange={e => { setRootPath(e.target.value); localStorage.setItem('handyandy_root', e.target.value); }}
-                  style={{ fontSize: 11, padding: '4px 7px', border: '0.5px solid var(--color-border-secondary)', borderRadius: 'var(--border-radius-md)', background: 'var(--color-background-primary)', color: 'var(--color-text-primary)', width: 180 }} />
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <select value={gptModel} onChange={e => saveModel(e.target.value, modelList)}
+                    style={{ fontSize: 11, padding: '4px 7px', border: '0.5px solid var(--color-border-secondary)', borderRadius: 'var(--border-radius-md)', background: 'var(--color-background-primary)', color: 'var(--color-text-primary)' }}>
+                    {modelList.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
               </div>
+              <div className={styles.settingRow}>
+                <div>
+                  <div className={styles.settingLabel}>이미지 생성 모델</div>
+                  <div className={styles.settingSub}>DALL-E 이미지 생성에 사용할 모델</div>
+                </div>
+                <select value={imageModel} onChange={e => saveModel(gptModel, modelList, e.target.value, imageModelList)}
+                  style={{ fontSize: 11, padding: '4px 7px', border: '0.5px solid var(--color-border-secondary)', borderRadius: 'var(--border-radius-md)', background: 'var(--color-background-primary)', color: 'var(--color-text-primary)' }}>
+                  {imageModelList.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              <div className={styles.settingRow}>
+                <div><div className={styles.settingLabel}>모델 목록 갱신</div><div className={styles.settingSub}>OpenAI에서 최신 모델 목록 가져오기</div></div>
+                  <button className={styles.btnSm} disabled={fetchingModels} onClick={async () => {
+                    const key = apiKeys['ChatGPT'];
+                    if (!key) { setSaveMsg('ChatGPT API 키를 먼저 입력해주세요.'); setTimeout(() => setSaveMsg(''), 3000); return; }
+                    setFetchingModels(true);
+                    const result = await fetchModels(key);
+                    if (result.ok && result.models) {
+                      const list = result.models;
+                      const model = list.includes(gptModel) ? gptModel : list[0];
+                      const imgList = result.image_models ?? imageModelList;
+                      const imgModel = imgList.includes(imageModel) ? imageModel : imgList[0];
+                      await saveModel(model, list, imgModel, imgList);
+                      setSaveMsg(`모델 목록 갱신 완료 (텍스트 ${list.length}개, 이미지 ${imgList.length}개)`);
+                    } else {
+                      setSaveMsg(`갱신 실패: ${result.error}`);
+                    }
+                    setFetchingModels(false);
+                    setTimeout(() => setSaveMsg(''), 3000);
+                  }}>
+                    <i className={`ti ${fetchingModels ? 'ti-loader' : 'ti-refresh'}`} style={{ fontSize: 10 }} />
+                    {fetchingModels ? '갱신 중...' : '목록 갱신'}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className={styles.settingGroup}>
+              <div className={styles.settingHd}>기타</div>
               <div className={styles.settingRow}>
                 <div><div className={styles.settingLabel}>프리셋 관리</div><div className={styles.settingSub}>드롭다운 항목 편집</div></div>
                 <button className={styles.btn}><i className="ti ti-edit" style={{ fontSize: 11 }} />편집</button>

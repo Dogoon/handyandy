@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# HandyAndy 개인 설정 (API 키 등)
+handyandy_private.json
+
+# HandyAndy 설정 폴더
+agent/settings/
