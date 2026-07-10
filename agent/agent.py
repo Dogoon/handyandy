@@ -1,6 +1,7 @@
 import http.server
 import json
 import os
+import platform
 import socket
 import socketserver
 import subprocess
@@ -60,7 +61,10 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
             folder = params.get("path", [""])[0]
             if folder:
                 Path(folder).mkdir(parents=True, exist_ok=True)
-                subprocess.Popen(["open", folder])
+                if platform.system() == "Windows":
+                    subprocess.Popen(["explorer", folder.replace('/', '\\')])
+                else:
+                    subprocess.Popen(["open", folder])
                 self.send_json({"ok": True})
             else:
                 self.send_json({"ok": False, "error": "경로가 없습니다."}, 400)
@@ -68,7 +72,10 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/open-file":
             file_path = params.get("path", [""])[0]
             if file_path and Path(file_path).is_file():
-                subprocess.Popen(["open", file_path])
+                if platform.system() == "Windows":
+                    os.startfile(file_path.replace('/', '\\'))
+                else:
+                    subprocess.Popen(["open", file_path])
                 self.send_json({"ok": True})
             else:
                 self.send_json({"ok": False, "error": "파일을 찾을 수 없습니다."}, 404)
@@ -123,31 +130,56 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
 
         elif path == "/pick-folder":
             try:
-                result = subprocess.run(
-                    ['osascript', '-e', 'POSIX path of (choose folder)'],
-                    capture_output=True, text=True
-                )
-                if result.returncode != 0:
-                    self.send_json({"ok": False, "error": "취소됨"})
-                    return
-                folder = result.stdout.strip().rstrip('/')
-                name = folder.split('/')[-1]
-                self.send_json({"ok": True, "path": folder, "name": name})
+                if platform.system() == "Darwin":
+                    result = subprocess.run(
+                        ['osascript', '-e', 'POSIX path of (choose folder)'],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode != 0:
+                        self.send_json({"ok": False, "error": "취소됨"})
+                        return
+                    folder = result.stdout.strip().rstrip('/')
+                else:
+                    import tkinter as tk
+                    from tkinter import filedialog
+                    root_tk = tk.Tk(); root_tk.withdraw(); root_tk.attributes('-topmost', True)
+                    folder = filedialog.askdirectory(parent=root_tk)
+                    root_tk.destroy()
+                    if not folder:
+                        self.send_json({"ok": False, "error": "취소됨"})
+                        return
+                name = folder.replace('\\', '/').split('/')[-1]
+                self.send_json({"ok": True, "path": folder.replace('\\', '/'), "name": name})
             except Exception as e:
                 self.send_json({"ok": False, "error": str(e)}, 500)
 
         elif path == "/pick-file":
             try:
                 initial_dir = body.get("initial_dir", "~")
-                script = f'POSIX path of (choose file default location POSIX file "{initial_dir}")'
-                result = subprocess.run(
-                    ['osascript', '-e', script],
-                    capture_output=True, text=True
-                )
-                if result.returncode != 0:
-                    self.send_json({"ok": False, "error": "취소됨"})
-                    return
-                file_path = result.stdout.strip()
+                if platform.system() == "Darwin":
+                    script = f'POSIX path of (choose file default location POSIX file "{initial_dir}")'
+                    result = subprocess.run(
+                        ['osascript', '-e', script],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode != 0:
+                        self.send_json({"ok": False, "error": "취소됨"})
+                        return
+                    file_path = result.stdout.strip()
+                else:
+                    import tkinter as tk
+                    from tkinter import filedialog
+                    root_tk = tk.Tk(); root_tk.withdraw(); root_tk.attributes('-topmost', True)
+                    file_path = filedialog.askopenfilename(
+                        initialdir=initial_dir,
+                        filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                        parent=root_tk
+                    )
+                    root_tk.destroy()
+                    if not file_path:
+                        self.send_json({"ok": False, "error": "취소됨"})
+                        return
+                file_path = file_path.replace('\\', '/')
                 with open(file_path, encoding="utf-8") as f:
                     data = json.load(f)
                 name = file_path.split('/')[-1]
