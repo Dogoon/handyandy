@@ -10,7 +10,7 @@ echo HandyAndy 시작 중...
 start "HandyAndy-Web" /min cmd /c "cd /d %SCRIPT_DIR% && npm run dev"
 
 :: 에이전트 시작
-start "HandyAndy-Agent" /min cmd /c "python %SCRIPT_DIR%agent\agent.py"
+start "HandyAndy-Agent" /min cmd /c "py %SCRIPT_DIR%agent\agent.py"
 
 :: 서버 준비 대기
 timeout /t 5 /nobreak > nul
